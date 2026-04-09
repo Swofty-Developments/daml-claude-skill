@@ -4,15 +4,6 @@ A [Claude Code skill](https://code.claude.com/docs/en/skills) that teaches Claud
 
 Built from the canonical reference corpus: [Hyperledger Splice](https://github.com/hyperledger-labs/splice), the [Canton platform](https://github.com/digital-asset/canton), and the [Splice Wallet Kernel](https://github.com/hyperledger-labs/splice-wallet-kernel). Every convention is grounded in a real file:line citation from those repos, and the skill auto-clones them on first use — no manual setup required.
 
-## What's in it
-
-- **`SKILL.md`** — the entrypoint. Five hard rules, package layout, signatory/choice conventions, propose/accept handshake, token-standard interface implementations (`HoldingV1`, `TransferInstructionV1`, `AllocationV1`, `MetadataV1`, `BurnMintV1`), subscriptions, transfers, locking, upgrades summary, test skeleton, pitfall table, and the mandatory `daml build && daml test` verify loop.
-- **`references/edge-cases.md`** — authorization rules, divulgence and the checked-fetch antidote, choice observers, multi-party controllers, every interface subtlety (`viewtype`, `requires`, `toInterface`, `coerceInterfaceContractId`, `ExtraArgs`/`ChoiceContext`/`Metadata`), exception rollback semantics, time non-determinism, decimal precision, and the top compile/runtime errors with fixes.
-- **`references/upgrades.md`** — Smart Contract Upgrades: what's allowed and what isn't, V1/V2 package split, `deprecatedChoice`, runtime pitfalls, local verification.
-- **`references/local-setup.md`** — installing the Daml SDK, every CLI command, the dev loop, sandbox vs Canton vs Splice localnet, common install errors.
-- **`references/cheatsheet.md`** — copy-pasteable canonical patterns: full offer/accept with all four exits, `HoldingV1` impl, `TransferFactory` impl with `expectedAdmin` guard, subscription state machine, checked fetch, test skeleton, `daml.yaml`.
-- **`scripts/ensure_refs.py`** — cross-platform (macOS/Linux/Windows) helper that ensures `canton`, `splice`, and `splice-wallet-kernel` are available locally, cloning them shallow into the OS cache on first use. Requires Python 3 and `git`.
-
 ## Install
 
 ### Via `npx skills`
