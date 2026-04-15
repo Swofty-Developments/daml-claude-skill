@@ -102,7 +102,7 @@ Modeled after splice-amulet. Hard rules from Kevin's review of the Cantory daml 
 - **Two packages: `{project}-v1` (prod) and `{project}-v1-test` (scripts).** Tests never live in the prod package; they live in a sibling that depends on the built `.dar`.
 - **Version-namespace the directory.** Templates live under `{Project}/V1/`, so the module name is `{Project}.V1.Token`, not `{Project}.Token`. Future v2 lives at `{Project}/V2/` in a `{project}-v2` package.
 - **One template per file at the top level.** No more grab-bag `Token.daml` containing every template. Each template gets its own `.daml` file named after the template (`Token.daml`, `TokenFactory.daml`, `TokenTransferFactory.daml`, `TokenBurnMintFactory.daml`, `TokenTransferInstruction.daml`, `TokenAllocation.daml`, `TokenInstrument.daml`, `CantoryRules.daml`, `CantoryProxy.daml`, …).
-- **Helpers go in a sibling `Foo/` subdirectory.** Things like `createActivityMarker`, `consumeInputHoldings`, and shared records (`FeaturingConfig`) live in `Token/Util.daml`. Keep `Util.daml` template-free so every `Token*.daml` file can import it without cycles.
+- **Helpers go in a sibling `Foo/` subdirectory.** Things like `createActivityMarker` and shared records (`FeaturingConfig`) live in `Token/Util.daml`. **Keep `Util.daml` template-free** so every `Token*.daml` can import it without cycles. Helpers that *fetch / archive the template itself* (e.g. `consumeInputHoldings` walking `ContractId Token`) cannot live in `Util.daml` — they must stay in the template's own file (`Token.daml` here) or a downstream module that already depends on it. Cycles are the silent killer when splitting one big file into per-template modules.
 - **Project-specific interface definitions live in `Foo/StandardInterfaces.daml`.** Templates implement them via the same `interface instance` mechanism as the splice CIP interfaces.
 
 Naming:
@@ -131,6 +131,42 @@ build-options:
   - --ghc-option=-Wunused-binds
   - --ghc-option=-Wunused-matches
 ```
+
+**Data-dependency paths are relative to the `daml.yaml`'s directory, not the repo root.** When you nest a package one level deeper (e.g. `daml/cantory-v1/daml.yaml` instead of `daml.yaml` at the repo root), every `../lib/foo.dar` becomes `../../lib/foo.dar`. The build error is silent — `damlc` reports `does not exist (No such file or directory)` rather than complaining about path semantics. Always re-check `data-dependencies` after moving a package.
+
+**The sibling test package depends on the *built* `.dar`.** `cantory-v1-test/daml.yaml` lists `../cantory-v1/.daml/dist/cantory-v1-2.0.0.dar` in `data-dependencies` — that means the prod package must be built first. Wire this into your build script (Makefile, etc.) so `daml build` of the test package implicitly triggers a prod build.
+
+## Codegen and downstream Rust crates
+
+Project that consumes daml templates from Rust uses a `daml-codegen` step (e.g. `make generate-daml` running `cargo run -p daml-codegen -- ./dars/*.dar --package-name {project}-daml --output ./{project}-daml`).
+
+The output mirrors the daml module path verbatim, lowercased, with one Rust module per template file plus one Rust module per choice:
+
+```
+cantory-daml/src/cantory/v1/
+├── token/
+│   ├── token.rs                       -- struct Token
+│   ├── token_transfer.rs              -- choice argument record
+│   ├── token_burn.rs
+│   └── …
+├── token_factory/
+│   ├── token_factory.rs
+│   ├── token_factory_mint.rs
+│   ├── token_factory_create_token.rs
+│   └── …
+├── token_instrument/token_instrument.rs
+└── …
+```
+
+So Rust import paths look like `cantory_daml::cantory::v1::token::token::Token` (template name appears twice — once as module, once as struct). When you rename a daml template, the Rust path changes and every consumer breaks. Plan the rename + codegen + repoint as a single PR.
+
+**The codegen workflow when daml structure changes:**
+1. `daml build` inside the prod package — produces `.daml/dist/{name}-{version}.dar`
+2. Copy that `.dar` into the consumer's `dars/` directory (replace the stale one)
+3. Wipe `{project}-daml/src/*` and run codegen against the new `.dar`
+4. Update every Rust import that referenced the old path
+
+Skipping any step leaves you with a half-rebuilt tree that compiles against stale bindings.
 
 ## Templates
 
