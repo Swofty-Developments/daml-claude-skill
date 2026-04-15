@@ -99,18 +99,31 @@ Splice's repos pin SDK `3.3.0-snapshot.20250502.13767.0.v2fc6c7e2`. If you're wo
 
 Modeled after splice-amulet. Hard rules from Kevin's review of the Cantory daml restructure:
 
-- **Two packages: `{project}-v1` (prod) and `{project}-v1-test` (scripts).** Tests never live in the prod package; they live in a sibling that depends on the built `.dar`.
+- **Up to three packages, not more: `{project}-v1` (prod), `{project}-v1-test` (scripts), and one `{project}-api-{name}-v1` per project-defined interface.** Tests never live in the prod package; they live in a sibling that depends on the built `.dar`. Project-defined interfaces (e.g. `BurnMintFactory` as `cantory-api-burn-mint-v1`) live in their own versioned package so external implementors depend on the interface without pulling in the prod templates. Don't pre-split by feature — splice-amulet / splice-wallet are split because of cross-product reuse, not because big packages are bad.
 - **Version-namespace the directory.** Templates live under `{Project}/V1/`, so the module name is `{Project}.V1.Token`, not `{Project}.Token`. Future v2 lives at `{Project}/V2/` in a `{project}-v2` package.
 - **One template per file at the top level.** No more grab-bag `Token.daml` containing every template. Each template gets its own `.daml` file named after the template (`Token.daml`, `TokenFactory.daml`, `TokenTransferFactory.daml`, `TokenBurnMintFactory.daml`, `TokenTransferInstruction.daml`, `TokenAllocation.daml`, `TokenInstrument.daml`, `CantoryRules.daml`, `CantoryProxy.daml`, …).
 - **Helpers go in a sibling `Foo/` subdirectory.** Things like `createActivityMarker` and shared records (`FeaturingConfig`) live in `Token/Util.daml`. **Keep `Util.daml` template-free** so every `Token*.daml` can import it without cycles. Helpers that *fetch / archive the template itself* (e.g. `consumeInputHoldings` walking `ContractId Token`) cannot live in `Util.daml` — they must stay in the template's own file (`Token.daml` here) or a downstream module that already depends on it. Cycles are the silent killer when splitting one big file into per-template modules.
 - **Project-specific interface definitions live in `Foo/StandardInterfaces.daml`.** Templates implement them via the same `interface instance` mechanism as the splice CIP interfaces.
 
 Naming:
-- Package: `{project}-v1` (lowercase, hyphen, version-suffixed). Tests in `{project}-v1-test`.
-- Module: `{Project}.V1.{Thing}` for prod, `{Project}.V1.Scripts.{TestName}` for tests.
-- Templates: singular noun (`Token`, `TokenInstrument`, `CantoryProxy`). The DAML template name should reflect *what the contract is* — call the registry-of-instruments `TokenInstrument`, not `TokenRegistry` (a registry shows all instruments; one instance is one instrument).
+- Package: `{project}-v1` (lowercase, hyphen, version-suffixed). Tests in `{project}-v1-test`. Project-defined interfaces in `{project}-api-{name}-v1`.
+- Module: `{Project}.V1.{Thing}` for prod, `{Project}.V1.Scripts.{TestName}` for tests, `{Project}.Api.{Name}V1` for interface packages.
+- Templates: singular noun (`Token`, `TokenInstrument`, `CantoryProxy`). The DAML template name should reflect *what the contract is* — call the registry-of-instruments `TokenInstrument`, not `TokenRegistry` (a registry is the singular admin system; one contract is one instrument) and not `TokenMetadata` (that names the payload, not the concept, and shadows `Api.Token.MetadataV1.Metadata`).
 - Choices: `TemplateName_Action` (`Token_Transfer`, `TokenFactory_Mint`, `CantoryProxy_CreateToken`). When you rename a template, rename every choice in lockstep.
-- Result types: `TemplateName_ActionResult` records, even for single-field returns.
+- Result types: `TemplateName_ActionResult` records, even for single-field returns. Even an empty result uses a unit-like record (`data Confirmation_ExpireResult = Confirmation_ExpireResult`) so future versions can add fields.
+
+**Two-prefix rule (Cantory).** A project with two distinct layers uses two uniform prefixes, applied *consistently within each layer* — not just to break collisions.
+
+| Layer | Prefix | Contains |
+|---|---|---|
+| Asset | `Token` | The held asset + every template that implements a token-standard interface for it (`Token`, `TokenInstrument`, `TokenFactory`, `TokenTransferFactory`, `TokenBurnMintFactory`, `TokenTransferInstruction`, `TokenAllocation`) |
+| Platform | `Cantory` | Platform templates: licensing, rules, cross-participant proxy (`CantoryRules`, `CantoryLicensedFactory`, `PendingLicensePayment`, `CantoryProxy`) |
+
+Don't selectively drop the prefix even where there's no collision — the prefix does layer-disambiguation work.
+
+**Interface-instance co-location:**
+- Template has its own domain identity (e.g. `Token` implements `Holding`, `LockedToken` also implements `Holding`) → `interface instance` lives inline in the template's `where` block, in the domain file.
+- Template exists *to implement* an interface whose name would collide (e.g. `TransferInstruction`, `Allocation`) → template gets its own file prefixed with the layer noun: `TokenTransferInstruction.daml`, `TokenAllocation.daml`. The file's module name follows the prefix rule, the `interface instance` still names the upstream interface.
 
 `daml.yaml` skeleton:
 
@@ -168,7 +181,40 @@ So Rust import paths look like `cantory_daml::cantory::v1::token::token::Token` 
 
 Skipping any step leaves you with a half-rebuilt tree that compiles against stale bindings.
 
+## File header and imports
+
+Every `.daml` file opens in this order: copyright/SPDX comment, language pragmas, `module` line, qualified stdlib imports, selective stdlib imports, blank line, unqualified local imports.
+
+```daml
+-- Copyright (c) 2024 ... SPDX-License-Identifier: Apache-2.0
+{-# LANGUAGE ApplicativeDo #-}
+module Cantory.V1.Token where
+
+import qualified DA.Map as Map
+import qualified DA.Set as Set
+import DA.Optional (fromOptional, isNone)
+import DA.Assert
+
+import Splice.Util
+import qualified Splice.Api.Token.HoldingV1 as Api.Token.HoldingV1
+```
+
+- `DA.Map` / `DA.Set` / `DA.TextMap` / `DA.Text` — always qualified with the short alias.
+- `DA.Optional` / `DA.Action` — selective imports.
+- Local Splice/Cantory modules unqualified unless they shadow.
+- Token-standard API modules qualified: `import Splice.Api.Token.HoldingV1 qualified as Api.Token.HoldingV1`.
+- `Prelude hiding (...)` when you genuinely shadow a stdlib name.
+
 ## Templates
+
+### Field ordering
+
+Inside `with`:
+1. Core parties (`dso`, `owner`, `user`, `provider`) — first, always.
+2. State fields (epochs, maps, status enums).
+3. Related parties (optional cosignatories, observers captured as fields).
+4. Configuration objects (`config : AnsRulesConfig`, `featuring : FeaturingConfig`).
+5. Metadata, timestamps, booleans.
 
 ### Signatory and observer choices
 
@@ -279,6 +325,36 @@ Token-standard interface choices universally take an `extraArgs : ExtraArgs` par
 
 For DvP/atomic settlement, implement `AllocationV1`. For burn/mint, `BurnMintV1`. Pick the existing interface — never invent your own.
 
+### Defining a project-specific interface
+
+When you *do* own the interface (e.g. `BurnMintFactory` in `cantory-api-burn-mint-v1`), use the Splice delegation shape: the interface declares a `viewtype`, one `_Impl` method per choice, and a thin choice that calls the impl. Implementors supply the `_Impl` body.
+
+```daml
+interface BurnMintFactory where
+  viewtype BurnMintFactoryView
+
+  burnMintFactory_burnMintImpl :
+    ContractId BurnMintFactory -> BurnMintFactory_BurnMint -> Update BurnMintFactory_BurnMintResult
+
+  nonconsuming choice BurnMintFactory_BurnMint : BurnMintFactory_BurnMintResult
+    with expectedAdmin : Party; extraActors : [Party]; ...
+    controller (view this).admin :: extraActors
+    do burnMintFactory_burnMintImpl this self arg
+
+data BurnMintFactoryView = BurnMintFactoryView with admin : Party; meta : Metadata
+  deriving (Show, Eq)
+```
+
+Naming inside a project-defined interface:
+
+| Element | Pattern | Example |
+|---|---|---|
+| Interface | PascalCase | `BurnMintFactory` |
+| Viewtype | `{Interface}View` | `BurnMintFactoryView` |
+| Impl method | camelCase `_…Impl` | `burnMintFactory_burnMintImpl` |
+| Choice | `{Interface}_{Action}` | `BurnMintFactory_BurnMint` |
+| Result | `{Choice}Result` | `BurnMintFactory_BurnMintResult` |
+
 Canonical impls to read:
 - `splice/daml/splice-amulet/daml/Splice/Amulet.daml` — Holding
 - `splice/daml/splice-amulet/daml/Splice/AmuletTransferInstruction.daml` — TransferInstruction
@@ -354,10 +430,52 @@ Splice avoids `try`/`catch` in production choice bodies — the rollback semanti
 From `Splice.Util`:
 
 - **`HasCheckedFetch t cgid`** — every fetch goes through `fetchChecked expectedCgid cid`. Implement it for your view types so you can never accidentally mix DSO/owner groups.
-- **`fetchAndArchive`**, **`fetchReferenceData`**, **`fetchPublicReferenceData`** — name the intent of every fetch.
+- **`fetchAndArchive`**, **`fetchReferenceData`**, **`fetchPublicReferenceData`** — name the intent of every fetch. `fetchAndArchive` consumes, `fetchReferenceData` is for stakeholder-readable state, `fetchPublicReferenceData` for publicly-disclosed contracts.
 - **`Patchable a`** — three-way merge for config updates.
-- **`require : Text -> Bool -> Update ()`** — preferred assertion.
+- **`require : Text -> Bool -> Update ()`** — preferred assertion. Over `assertMsg`, over `abort`.
 - **`deprecatedChoice : Text -> Text -> Text -> Update a`** — for retired choices.
+
+### Contract-group IDs
+
+The canonical group-ID types (define once at the project level; reuse everywhere):
+
+```daml
+data ForDso   = ForDso   with dso : Party                                  deriving (Eq, Show)
+data ForOwner = ForOwner with dso : Party; owner : Party                   deriving (Eq, Show)
+data ForRound = ForRound with dso : Party; round : Round                   deriving (Eq, Show)
+```
+
+Every template either implements `HasCheckedFetch` *inline in its `where` block* (when the group is derivable from the template itself) or via an instance on its interface view:
+
+```daml
+template AnsEntry with ... where
+  signatory user, dso
+  ...
+
+instance HasCheckedFetch AnsEntry ForDso where
+  contractGroupId AnsEntry{..} = ForDso with dso
+```
+
+Then at call sites:
+
+```daml
+entry   <- fetchChecked         (ForDso   with dso)          entryCid
+holding <- fetchChecked         (ForOwner with dso; owner)   holdingCid
+round_  <- fetchPublicReferenceData (ForDso with dso)        roundCid
+```
+
+### Shared config records
+
+When two-plus templates carry the same field cluster, consolidate into a record in a template-free helper module (e.g. `Project/V1/Token/Util.daml`). Canonical example — the featured-app-right pair that recurs across token-layer templates:
+
+```daml
+data FeaturingConfig = FeaturingConfig with
+    featuredAppRightCid : Optional (ContractId FA.FeaturedAppRight)
+    rewardBeneficiary   : Party
+  deriving (Eq, Show)
+```
+
+Embedded as `featuring : FeaturingConfig` on each template rather than inlining both fields five times. Keep the helper module template-free so every `Token*.daml` can import it without cycles.
 
 ## Upgrades (SCU)
 
