@@ -64,20 +64,52 @@ Splice's repos pin SDK `3.3.0-snapshot.20250502.13767.0.v2fc6c7e2`. If you're wo
 ## Package layout
 
 ```
-splice-myfeature/
+{project}-v1/
 ├── daml.yaml
 └── daml/
-    └── Splice/
-        └── MyFeature.daml          -- main module
-        └── MyFeature/
-            └── Helpers.daml        -- internal helpers
+    └── {Project}/
+        └── V1/
+            ├── Token.daml                    -- one template per file
+            ├── TokenInstrument.daml
+            ├── TokenFactory.daml
+            ├── TokenTransferFactory.daml
+            ├── TokenBurnMintFactory.daml
+            ├── TokenTransferInstruction.daml
+            ├── TokenAllocation.daml
+            ├── Token/
+            │   ├── StandardInterfaces.daml   -- project-specific interfaces
+            │   └── Util.daml                 -- helpers + cross-cutting types
+            ├── CantoryRules.daml
+            ├── CantoryLicensedFactory.daml
+            ├── PendingLicensePayment.daml
+            └── CantoryProxy.daml
+
+{project}-v1-test/
+├── daml.yaml                                  -- depends on ../{project}-v1/.daml/dist/...dar
+└── daml/
+    └── {Project}/
+        └── V1/
+            └── Scripts/
+                ├── TestToken.daml
+                ├── TestCantoryProxy.daml
+                ├── TestCantoryLicense.daml
+                ├── FindFeaturedAppRight.daml
+                └── SetupMainnetFactory.daml
 ```
 
+Modeled after splice-amulet. Hard rules from Kevin's review of the Cantory daml restructure:
+
+- **Two packages: `{project}-v1` (prod) and `{project}-v1-test` (scripts).** Tests never live in the prod package; they live in a sibling that depends on the built `.dar`.
+- **Version-namespace the directory.** Templates live under `{Project}/V1/`, so the module name is `{Project}.V1.Token`, not `{Project}.Token`. Future v2 lives at `{Project}/V2/` in a `{project}-v2` package.
+- **One template per file at the top level.** No more grab-bag `Token.daml` containing every template. Each template gets its own `.daml` file named after the template (`Token.daml`, `TokenFactory.daml`, `TokenTransferFactory.daml`, `TokenBurnMintFactory.daml`, `TokenTransferInstruction.daml`, `TokenAllocation.daml`, `TokenInstrument.daml`, `CantoryRules.daml`, `CantoryProxy.daml`, …).
+- **Helpers go in a sibling `Foo/` subdirectory.** Things like `createActivityMarker`, `consumeInputHoldings`, and shared records (`FeaturingConfig`) live in `Token/Util.daml`. Keep `Util.daml` template-free so every `Token*.daml` file can import it without cycles.
+- **Project-specific interface definitions live in `Foo/StandardInterfaces.daml`.** Templates implement them via the same `interface instance` mechanism as the splice CIP interfaces.
+
 Naming:
-- Package: `splice-{feature}` (lowercase, hyphen). Tests in `splice-{feature}-test`.
-- Module: `Splice.Feature` for prod, `Splice.Scripts.TestFeature` for tests.
-- Templates: singular noun (`Amulet`, `TransferOffer`).
-- Choices: `TemplateName_Action` (`TransferOffer_Accept`, `Amulet_ExpireV2`).
+- Package: `{project}-v1` (lowercase, hyphen, version-suffixed). Tests in `{project}-v1-test`.
+- Module: `{Project}.V1.{Thing}` for prod, `{Project}.V1.Scripts.{TestName}` for tests.
+- Templates: singular noun (`Token`, `TokenInstrument`, `CantoryProxy`). The DAML template name should reflect *what the contract is* — call the registry-of-instruments `TokenInstrument`, not `TokenRegistry` (a registry shows all instruments; one instance is one instrument).
+- Choices: `TemplateName_Action` (`Token_Transfer`, `TokenFactory_Mint`, `CantoryProxy_CreateToken`). When you rename a template, rename every choice in lockstep.
 - Result types: `TemplateName_ActionResult` records, even for single-field returns.
 
 `daml.yaml` skeleton:
